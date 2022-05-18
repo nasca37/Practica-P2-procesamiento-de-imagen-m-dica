@@ -12,7 +12,8 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from scipy import ndimage
 from pydicom.pixel_data_handlers.util import apply_modality_lut
 import random
-
+import corregistro
+import math
 
 # Variables globales
 SLICE_X = 0
@@ -27,11 +28,14 @@ SLICE_X_2 = 0
 SLICE_Y_2 = 0
 SLICE_Z_2 = 0
 
+LANDMARK = False
+
 ZONAS_ATLAS = 170
  
 GENERAL_ATLAS = False
 ONLY_HIPO = False
 
+CO = False
 MAX_SLIDER_X_2 = 0
 MAX_SLIDER_Y_2 = 0
 MAX_SLIDER_Z_2 = 0
@@ -83,7 +87,7 @@ def load_dicom_folder(path):
     for f in file_paths:
         dcm = pydicom.dcmread(f)
         slices.append(dcm)
-    slices = sorted(slices,key=lambda s: s.SliceLocation,reverse=True)
+    slices = sorted(slices,key=lambda s: s.SliceLocation,reverse=False)
     for s in slices:
         
         
@@ -94,10 +98,28 @@ def load_dicom_folder(path):
             img_data = np.zeros((img.shape[0],img.shape[1],len(file_paths)))
             img_data[:,:,idx] = img
         idx = idx + 1
-    return np.rot90(img_data,k=2),slices
+    return img_data,slices
+
+def load_dicom_file(path,atlas = False):
+    if path == None:
+        return None
+
+    dcm = pydicom.dcmread(path)
+    if atlas:    
+        data = dcm.pixel_array
+        
+        data = np.swapaxes(data,0,2)
+        data = np.swapaxes(data,0,1)
+        print(data.shape)
+        return data
+    data = dcm.pixel_array[6:-6, 6:-6, 6:-6]
+    data = np.swapaxes(data,0,2)
+    data = np.swapaxes(data,0,1)
+    return data
 
 def random_color_list(value):
     colores = []
+    random.seed(42)
     for i in range(value):
         r = random.randint(0,255)
         g = random.randint(0,255)
@@ -105,55 +127,71 @@ def random_color_list(value):
         colores.append([r,g,b])
     return colores
 
+def canvas_idx(canvas):
+    values = list(_VARS.values())
+    for idx in range(len(values)):
+        if canvas == values[idx]:
+            return idx
+    print("No hay coincidencias")
+    return 0
 
-def load_dicom_file(path,atlas = False):
-    if path == None:
-        return None
 
-    dcm = pydicom.dcmread(path)
-    if atlas:
-        return dcm.pixel_array
-
-    return dcm.pixel_array[6:-6, 6:-6, 6:-6]
 
 def obtain_image_slice(data,lower=False):
     #global SLICE_X,SLICE_Y,SLICE_Z
     if lower:
-        return (data[:,SLICE_Y2-1,:] ,data[:,:,SLICE_Z2-1],data[SLICE_X2-1,:,:])
+        #return (data[:,SLICE_Y2-1,:] ,data[:,:,SLICE_Z2-1],data[SLICE_X2-1,:,:])
+        if SLICE_X2 > 0 and SLICE_Y2 > 0 and SLICE_Z2 > 0:
+            return (data[SLICE_X2-1,:,:],data[:,SLICE_Y2-1,:] ,data[:,:,SLICE_Z2-1])
+        else:
+            return (data[SLICE_X2,:,:],data[:,SLICE_Y2,:] ,data[:,:,SLICE_Z2])
     else:
-        return (data[SLICE_X-1,:,:],data[:,SLICE_Y-1,:] ,data[:,:,SLICE_Z-1])
+        if SLICE_X > 0 and SLICE_Y > 0 and SLICE_Z > 0:
+            return (data[SLICE_X-1,:,:],data[:,SLICE_Y-1,:] ,data[:,:,SLICE_Z-1])
+        else:
+            return (data[SLICE_X,:,:],data[:,SLICE_Y,:] ,data[:,:,SLICE_Z])
+def onclick(event):
+    global SUB_POINT_1,SUB_POINT_2,MASK,LANDMARK
+
+    print('%s click: button=%d, x=%d, y=%d, xdata=%f, ydata=%f' %
+          ('double' if event.dblclick else 'single', event.button,
+           event.x, event.y, event.xdata, event.ydata))
+    if LANDMARK:
+        idx = canvas_idx(event.canvas)
+        x = event.x
+        y = event.y
+        scale = np.array(phantom_data.shape)/np.array(dcm_data.shape)
+        if idx <= 2:
+            if idx == 0:
+                point = (x,y,SLICE_X*scale[0])
+            if idx == 1:
+                point = (SLICE_Y*scale[1],y,x)
+            if idx == 2:
+                point = (x,SLICE_Z*scale[2],y)
+
+            points_pac.append(point)
+        else:
+            if idx == 3:
+                point = (x,y,SLICE_X2*scale[0])
+            if idx == 4:
+                point = (SLICE_Y2*scale[1],y,x)
+            if idx == 5:
+                point = (x,SLICE_Z2*scale[2],y)
+
+            points_phan.append(point)
 
 
-def subimage():
-    global current_image
-    global SUB_POINT_1
-    global SUB_POINT_2
-    global SUBIMAGE
-    if SUB_POINT_1[0] < SUB_POINT_2[0] and SUB_POINT_1[1] < SUB_POINT_2[1]:
-        current_image = current_image[SUB_POINT_1[1]:SUB_POINT_2[1],SUB_POINT_1[0]:SUB_POINT_2[0]]
-        print(f"Punto 1: {SUB_POINT_1}   Punto 2: {SUB_POINT_2}        1")
-    elif SUB_POINT_1[0] > SUB_POINT_2[0] and SUB_POINT_1[1] < SUB_POINT_2[1]:
-        current_image = current_image[SUB_POINT_1[1]:SUB_POINT_2[1],SUB_POINT_2[0]:SUB_POINT_1[0]]
-        print(f"Punto 1: {SUB_POINT_1}   Punto 2: {SUB_POINT_2}        2")
-    elif SUB_POINT_1[0] < SUB_POINT_2[0] and SUB_POINT_1[1] > SUB_POINT_2[1]:
-        print(f"Punto 1: {SUB_POINT_1}   Punto 2: {SUB_POINT_2}        3")
-        current_image = current_image[SUB_POINT_2[1]:SUB_POINT_1[1],SUB_POINT_1[0]:SUB_POINT_2[0]]
-    elif SUB_POINT_1[0] > SUB_POINT_2[0] and SUB_POINT_1[1] > SUB_POINT_2[1]:
-        print(f"Punto 1: {SUB_POINT_1}   Punto 2: {SUB_POINT_2}        4")
-        current_image = current_image[SUB_POINT_2[1]:SUB_POINT_1[1],SUB_POINT_2[0]:SUB_POINT_1[0]]
-
-    clean_canvas('fig_second')
-    show_canvas_sec(current_image)
-    SUBIMAGE = False
-    SUB_POINT_1, SUB_POINT_2 = None,None
 
 def get_aspect(axis):
     if axis >= 2:
         return 1
     elif axis >= 3:
-        return 1/3
+        return 0.5
     else:
-        return 3
+        if CO:
+            return 1
+        else:
+            return 2
 
 def obtain_rgb_mask(m):
     mask = np.zeros((m.shape[0],m.shape[1],3))
@@ -190,39 +228,50 @@ def show_canvas(imgs,lower = False):
         canvas = "fig"+ str(i+1+offset)
         clean_canvas(canvas)
         fig = plt.figure(figsize=(4,4))
+        fig.canvas.mpl_connect('button_press_event', onclick)
         plt.axis("off")
         plt.tight_layout(pad=0)
         img = imgs[i]
         idx = i + offset
         if idx < 2:
-            img = np.rot90(img,k=3)
-            print(img.shape)
+            img = np.rot90(img,k=1)
+        # elif idx == 2:
+        #     img = np.rot90(img,k=2)
         elif idx == 3:
-            img = np.rot90(img,k=2)
+            img = np.rot90(img,k=1)
         elif idx == 4:
-            img = np.rot90(img,k=2)
+            img = np.rot90(img,k=1)
 
         if GENERAL_ATLAS:
-            if idx > 2:
-                mask = obtain_image_slice(atlas_data,lower=True)[i]
-                if idx == 3 or idx == 4:
-                    mask = np.rot90(mask,k=2)
+            if idx > 2 or CO:
+                if idx <=2:
+                    mask = obtain_image_slice(atlas_data,lower=False)[i]
+                else:
+                    mask = obtain_image_slice(atlas_data,lower=True)[i]
+                if idx == 3 or idx == 4 or idx == 1  or idx == 0:
+                    mask = np.rot90(mask,k=1)
+                # if idx == 2:
+                #     mask = np.rot90(mask,k=1)
                 mask = obtain_rgb_mask_tones(mask,colores)
+
 
                 img = (img - np.min(img)) / (np.max(img) - np.min(img)) * 255
                 img = cv2.cvtColor(img.astype(np.uint8),cv2.COLOR_GRAY2RGB)
                 img = algoritmo_pintor(img,mask,0.4)
                 img = img.astype(np.uint8)
         if ONLY_HIPO:
-              if idx > 2:
+              if idx > 2 or CO:
                 atlas_mask = mask = np.ma.masked_inside(atlas_data,HIPO_L,HIPO_R).mask*1
-                mask = obtain_image_slice(atlas_mask,lower=True)[i]
+                if idx <=2:
+                    mask = obtain_image_slice(atlas_mask,lower=False)[i]
+                else:
+                    mask = obtain_image_slice(atlas_mask,lower=True)[i]
                 
-                if idx == 3 or idx == 4:
-                    mask = np.rot90(mask,k=2)
+                if idx == 3 or idx == 4 or idx == 1 or idx == 0:
+                    mask = np.rot90(mask,k=1)
+                # if idx == 2:
+                #     mask = np.rot90(mask,k=1)
 
-                
-                print(mask)
                 mask = obtain_rgb_mask_tones(mask,colores)
 
                 img = (img - np.min(img)) / (np.max(img) - np.min(img)) * 255
@@ -281,6 +330,12 @@ def algoritmo_pintor(imgA,imgB,alpha):
 
     return imgA * (1 - alpha) + imgB*alpha
 
+def procesar_puntos(lista_puntos):
+    for i in range(len(lista_puntos)):
+        temp = lista_puntos[i][1]
+        lista_puntos[i][1] = lista_puntos[i][2]
+        lista_puntos[i][2] = temp
+    return lista_puntos
 
 def openWindowHeader(slices):
     idx = 0
@@ -313,20 +368,21 @@ sliders= [[sg.T('0',size=(4,1), key='-LEFT_x-'),
             sg.Slider((0,MAX_SLIDER_Z), key='-SLIDER_Z-', orientation='h', enable_events=True, disable_number_display=True),
             sg.T('0', size=(4,1), key='-RIGHT_Z-'),
             sg.Button("Cambiar slice"),
-            sg.Button("Mostrar Hipotalamo"), sg.Button("Reset"), sg.Button("Segmentacion"),sg.Button("Mostrar atlas")]]
+            sg.Button("Mostrar Hipotalamo"), sg.Button("Corregistro"), sg.Button("Landmarks"),sg.Button("Mostrar atlas")]]
 
 layout3 = [[sg.Canvas(key='fig4'),sg.Canvas(key="fig5"),sg.Canvas(key="fig6")]]
 
-sliders2 = [[
+sliders2 = [[         
+            sg.T('0',size=(4,1), key='-LEFT_x2-'),
+            sg.Slider((0,MAX_SLIDER_X), key='-SLIDER_X2-', orientation='h', enable_events=True, disable_number_display=True),
+            sg.T('0', size=(4,1), key='-RIGHT_x2-'),
             sg.T('0',size=(4,1), key='-LEFT_y2-'),
             sg.Slider((0,MAX_SLIDER_Y), key='-SLIDER_Y2-', orientation='h', enable_events=True, disable_number_display=True),
             sg.T('0', size=(4,1), key='-RIGHT_y2-'),
             sg.T('0',size=(4,1), key='-LEFT_z2-'),
             sg.Slider((0,MAX_SLIDER_Z), key='-SLIDER_Z2-', orientation='h', enable_events=True, disable_number_display=True),
             sg.T('0', size=(4,1), key='-RIGHT_Z2-'),
-            sg.T('0',size=(4,1), key='-LEFT_x2-'),
-            sg.Slider((0,MAX_SLIDER_X), key='-SLIDER_X2-', orientation='h', enable_events=True, disable_number_display=True),
-            sg.T('0', size=(4,1), key='-RIGHT_x2-'),]]
+]]
 
 layout = [
         [sg.Column(layout1, key='-COL1-',element_justification='c')],
@@ -346,22 +402,50 @@ current_image = np.zeros((512,512))
 pixel_len_mm = [5, 1, 1]
 slices = None
 
-def onclick(event):
-    global SUB_POINT_1,SUB_POINT_2,MASK
+points_pac = [
+                                   [260, 120, 434],
+                                   [243, 120, 79],
+                                   [223, 120, 297],
+                                   [258, 182, 262],
+                                   [130,  72, 262],
+                                   [395,  82, 262],
+                                   [260,  93, 262],
+                                   [320,  98, 111],
+                                   [320,  44, 322],
+                                   [320, 100, 351],
 
-    print('%s click: button=%d, x=%d, y=%d, xdata=%f, ydata=%f' %
-          ('double' if event.dblclick else 'single', event.button,
-           event.x, event.y, event.xdata, event.ydata))
-    if SUBIMAGE:
-        if SUB_POINT_1 == None:
-            SUB_POINT_1 = (int(event.xdata),int(event.ydata))
-        elif SUB_POINT_2 == None:
-            SUB_POINT_2 = (int(event.xdata),int(event.ydata))
-            subimage()
-    if SEGMENTATION:
-        MASK = isocontorno(dcm_data,int(event.xdata),int(event.ydata),SLICE)
-        show_canvas(obtain_image_slice(dcm_data))
+                                   [243,  41, 37],
+                                   [245,  41, 410],
+                                   [103,  41, 325],
+                                   [420,  41, 290],
+                                   [267, 193, 302],
+                                   [274,  46, 302],
+                                   [381,  77, 302],
+                                   [130,  75, 302]
+                                  ]
+points_phan = [
+                               [89,  89, 16],
+                               [90,  89, 207],
+                               [111, 89, 83],
+                               [92, 149, 116],
+                               [148, 26, 116],
+                               [36,  27, 116],
+                               [91,  66, 116],
+                               [60,  29, 183],
+                               [60,  10, 58],
+                               [60,  77, 67],
 
+                               [ 88,   0, 214],
+                               [ 88,   0,  20],
+                               [173,   0,  80],
+                               [  3,   0,  80],
+                               [ 94, 154,  80],
+                               [ 96,   9,  80],
+                               [ 36,  39,  80],
+                               [148,  38,  80]
+                              ]
+points_pac = procesar_puntos(points_pac)
+points_phan = procesar_puntos(points_phan)
 while True:
     
     event,values = window.read()
@@ -390,6 +474,12 @@ while True:
         slider_x2.Update(range=(0, MAX_SLIDER_X2))
         slider_y2.Update(range=(0, MAX_SLIDER_Y2))
         slider_z2.Update(range=(0, MAX_SLIDER_Z2))
+        SLICE_X = int(values["-SLIDER_X-"])
+        SLICE_Y = int(values["-SLIDER_Y-"])
+        SLICE_Z = int(values["-SLIDER_Z-"])
+        SLICE_X2 = int(values["-SLIDER_X2-"])
+        SLICE_Y2 = int(values["-SLIDER_Y2-"])
+        SLICE_Z2 = int(values["-SLIDER_Z2-"])
         imgs = obtain_image_slice(dcm_data)
         show_canvas(imgs)
         imgs = obtain_image_slice(phantom_data)
@@ -409,20 +499,39 @@ while True:
         show_canvas(imgs,lower=True)
         window.refresh()
 
-    if event == "Aplicar W":
- 
-        data = apply_windowing(float(values['wMin']),float(values['wMax']))
-        
-        show_canvas_sec(data)
-        window.refresh()
+    if event == "Landmarks":
+        LANDMARK = True
+        points_pac = []
+        points_phan = []
 
-    if event == "Subimagen":
-        SUBIMAGE = True
-    if event == "Reset":
-        SEGMENTATION = False
+    if event == "Corregistro":
+        res,data = corregistro.apply_corregistro(points_pac,points_phan,dcm_data,phantom_data)
+        x_opt = res.x
+        print(f'''
+        Los mejores parámetros son: 
+            1) Traslación respecto al vector ({x_opt[0]}, {x_opt[1]}, {x_opt[2]}).
+            2) Rotación axial de {math.degrees(x_opt[3])} grados, eje ({x_opt[4]}, {x_opt[5]}, {x_opt[6]}).
+            3) Traslación respecto al vector: la hemos eliminado!.
+        ''')
+        dcm_data = data
+        CO = True
+        MAX_SLIDER_X = dcm_data.shape[0]
+        MAX_SLIDER_Y = dcm_data.shape[1]
+        MAX_SLIDER_Z = dcm_data.shape[2]
+        slider_x = window['-SLIDER_X-']
+        slider_y = window['-SLIDER_Y-']
+        slider_z = window['-SLIDER_Z-']
+        slider_x.Update(range=(0, MAX_SLIDER_X))
+        slider_y.Update(range=(0, MAX_SLIDER_Y))
+        slider_z.Update(range=(0, MAX_SLIDER_Z))
+        SLICE_X = 50
+        SLICE_Y = 50
+        SLICE_Z = 50
+        clean_canvas("fig1")
+        clean_canvas("fig2")
+        clean_canvas("fig3")
         imgs = obtain_image_slice(dcm_data)
         show_canvas(imgs)
-        clean_canvas("fig_second")
         window.refresh()
     
     if event == "Segmentacion":
